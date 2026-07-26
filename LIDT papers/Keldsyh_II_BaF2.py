@@ -47,16 +47,17 @@ Units
 
 Default workflow
 ----------------
-The default ``--mode all`` execution produces only BaF2 results:
-1. Keldysh photoionization-rate curves at 0.8 and 9.2 um.
-2. The density-growth summary at the documented 0.8-um reference intensity.
-3. NIR/LWIR total-ionization, component-scaling, time-domain, and 3D plots.
+The default ``--mode all`` execution currently produces only BaF2 NIR
+(0.8-um, 100-fs) results. The 9.2-um case is retained below as a commented
+reference block until its experimental fluence inputs are available.
 """
 
 
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 import os
 import pickle
 from pathlib import Path
@@ -149,30 +150,31 @@ BAF2_INPUT: Dict[str, Any] = {
             "mat_flag": 1,
             "wavelength_um": 0.8,
             "tau_fs": 100.0,
-            "reference_I0_wcm2": 1.0e13,
-            "F0_jcm2": None,
-            "input_note": (
-                "The 0.8 um, 100 fs laser condition is retained from the "
-                "unchanged laser system; 1.00e13 W/cm^2 is the documented "
-                "BaF2 reference intensity."
-            ),
-        },
-        {
-            "name": r"BaF$_2$, 9.2 $\mu$m",
-            "short": "BaF2_LWIR",
-            "material": "BaF2",
-            "region": "LWIR",
-            "mat_flag": 1,
-            "wavelength_um": 9.2,
-            "tau_fs": 2000.0,
+            "pulse_energy_uj": 361.0,
+            "beam_diameter_a_um": 226.6,
+            "beam_diameter_b_um": 429.7,
             "reference_I0_wcm2": None,
             "F0_jcm2": None,
             "input_note": (
-                "The 9.2 um, 2 ps laser condition is retained from the "
-                "unchanged laser system. No BaF2 LWIR reference peak "
-                "intensity or measured LIDT fluence is available."
+                "The 0.8 um, 100 fs laser condition uses a 361 uJ pulse. "
+                "Its elliptical Gaussian-beam peak fluence is calculated as "
+                "F = 2E/(pi a b), where a = 113.3 um and b = 214.85 um "
+                "are radii derived from the measured diameters."
             ),
         },
+        # 9.2-um / LWIR case deliberately disabled until pulse energy and
+        # elliptical beam diameters are supplied for its fluence calculation.
+        # {
+        #     "name": r"BaF$_2$, 9.2 $\mu$m",
+        #     "short": "BaF2_LWIR",
+        #     "material": "BaF2",
+        #     "region": "LWIR",
+        #     "mat_flag": 1,
+        #     "wavelength_um": 9.2,
+        #     "tau_fs": 2000.0,
+        #     "reference_I0_wcm2": None,
+        #     "F0_jcm2": None,
+        # },
     ],
 }
 # CODEX MODIFICATION END: explicit BaF2 input block used by this script
@@ -251,21 +253,59 @@ def material_flag1(
 # CODEX MODIFICATION START: BaF2-only case definitions
 def get_cases() -> List[CaseDict]:
     """
-    Return the default BaF2 NIR and LWIR cases.
+    Return the currently enabled BaF2 cases (NIR only).
 
     Returns
     -------
     list of dict
-        Two material/laser case dictionaries.
+        One material/laser case dictionary.
     """
 
-    return [dict(case) for case in BAF2_INPUT["cases"]]
+    cases: List[CaseDict] = []
+    for case_input in BAF2_INPUT["cases"]:
+        case = dict(case_input)
+        if case.get("pulse_energy_uj") is not None:
+            case["F0_jcm2"] = elliptical_gaussian_peak_fluence_jcm2(
+                pulse_energy_uj=float(case["pulse_energy_uj"]),
+                beam_diameter_a_um=float(case["beam_diameter_a_um"]),
+                beam_diameter_b_um=float(case["beam_diameter_b_um"]),
+            )
+        cases.append(case)
+    return cases
 # CODEX MODIFICATION END: BaF2-only case definitions
 
 
 # ============================================================
 # Laser pulse conversion
 # ============================================================
+
+def elliptical_gaussian_peak_fluence_jcm2(
+    pulse_energy_uj: float,
+    beam_diameter_a_um: float,
+    beam_diameter_b_um: float,
+) -> float:
+    """Return peak fluence for an elliptical Gaussian beam in J/cm^2.
+
+    The measured diameters are converted to radii before evaluating
+
+        F = 2 E / (pi a b),
+
+    where ``a`` and ``b`` are the supplied beam radii. This is the on-axis
+    (peak) spatial fluence, which is then converted to peak temporal
+    intensity by :func:`peak_intensity_from_fluence_wm2`.
+    """
+
+    energy_j = float(pulse_energy_uj) * 1.0e-6
+    radius_a_cm = 0.5 * float(beam_diameter_a_um) * 1.0e-4
+    radius_b_cm = 0.5 * float(beam_diameter_b_um) * 1.0e-4
+
+    if energy_j <= 0.0:
+        raise ValueError("pulse_energy_uj must be positive.")
+    if radius_a_cm <= 0.0 or radius_b_cm <= 0.0:
+        raise ValueError("Both beam diameters must be positive.")
+
+    return float(2.0 * energy_j / (np.pi * radius_a_cm * radius_b_cm))
+
 
 def peak_intensity_from_fluence_wm2(F0_jcm2: float, tau_fs: float) -> float:
     """
@@ -453,9 +493,10 @@ def keldysh_full_rate_m3_s(
         I = intensity[positive]
 
         with np.errstate(divide="ignore", invalid="ignore", over="ignore", under="ignore"):
-            # CODEX MODIFICATION START: match verified-reference gamma convention
-            electric_field = np.sqrt(I / (C0 * n0 * EPS0))
-            # CODEX MODIFICATION END: match verified-reference gamma convention
+            # I is the cycle-averaged intensity; Keldysh gamma uses the
+            # peak electric-field amplitude E0, for which
+            # I = (1/2) c n0 eps0 E0^2.
+            electric_field = np.sqrt((2.0 * I) / (C0 * n0 * EPS0))
             gamma = (omega / (E_CHARGE * electric_field)) * np.sqrt(mred * delta_J)
             gamma_sq = gamma**2
 
@@ -1369,7 +1410,7 @@ def plot_keldysh_rate_curves(
 def gamma_baf2_reference_from_intensity_wcm2(
     I_wcm2: ArrayLike,
     wavelength_um: float,
-    include_field_factor_two: bool = False,
+    include_field_factor_two: bool = True,
 ) -> ArrayLike:
     """
     Evaluate the Keldysh parameter using BaF2 as the reference material.
@@ -1424,7 +1465,7 @@ def gamma_baf2_reference_from_intensity_wcm2(
 def intensity_wcm2_from_gamma_baf2_reference(
     gamma: ArrayLike,
     wavelength_um: float,
-    include_field_factor_two: bool = False,
+    include_field_factor_two: bool = True,
 ) -> ArrayLike:
     """
     Convert a BaF2-reference Keldysh parameter to intensity in W/cm^2.
@@ -1460,7 +1501,7 @@ def add_baf2_gamma_top_axis(
     ax: plt.Axes,
     wavelength_um: float,
     gamma_ticks: Tuple[float, ...],
-    include_field_factor_two: bool = False,
+    include_field_factor_two: bool = True,
 ) -> None:
     """
     Add a BaF2-reference Keldysh-parameter axis above an intensity axis.
@@ -1506,7 +1547,7 @@ def plot_total_ionization_nir_lwir_comparison_with_gamma_axis(
     I_max_wcm2: float = 1.0e15,
     y_min: float = 1.0e0,
     y_max: float = 1.0e30,
-    include_field_factor_two: bool = False,
+    include_field_factor_two: bool = True,
     save_dir: Optional[Path] = None,
 ) -> None:
     """
@@ -1999,7 +2040,7 @@ def plot_material_figure_4_style(
     n_intensity_points: int = 70,
     save_dir: Optional[Path] = None,
 ) -> None:
-    """Compare NIR and LWIR density/rate scaling for one material."""
+    """Plot density/rate scaling for the supplied cases of one material."""
 
     I_values_wcm2 = np.logspace(10, 15, n_intensity_points)
     fig, axes = plt.subplots(1, 2, figsize=(13.0, 5.2))
@@ -2040,14 +2081,11 @@ def plot_material_figure_4_style(
     axes[1].legend(frameon=False, fontsize=9)
     axes[1].set_xlim(1.0e10, 1.0e15)
 
-    fig.suptitle(
-        rf"{material_name}: NIR 100 fs versus LWIR 2 ps irradiance scaling",
-        fontsize=14,
-    )
+    fig.suptitle(rf"{material_name}: irradiance scaling", fontsize=14)
     save_or_show(
         fig,
         save_dir,
-        "BaF2_fig4_NIR_LWIR_comparison.png",
+        "BaF2_fig4_NIR_scaling.png",
     )
 
 
@@ -2061,7 +2099,7 @@ def plot_baf2_figures(
 
     print("\n============================================================")
     print("Generating BaF2 plots")
-    print("Cases: 0.8 um, 100 fs and 9.2 um, 2 ps")
+    print("Case: 0.8 um, 100 fs")
     print("============================================================\n")
 
     for case in cases:
@@ -2339,20 +2377,307 @@ def plot_total_ionization_3d_surface_grid(
         label=r"$\log_{10}(W_{\rm total})$ [cm$^{-3}$ fs$^{-1}$]",
     )
 
+    enabled_regions = " / ".join(str(case["region"]) for case in cases)
     fig.suptitle(
-        r"Total ionization surfaces: BaF$_2$ NIR and LWIR",
+        rf"Total ionization surfaces: BaF$_2$ {enabled_regions}",
         fontsize=15,
     )
     save_or_show(
         fig=fig,
         save_dir=save_dir,
-        filename="05_total_ionization_3d_BaF2_NIR_LWIR.png",
+        filename=f"05_total_ionization_3d_BaF2_{'_'.join(str(case['region']) for case in cases)}.png",
         apply_tight_layout=False,
     )
 
 # ============================================================
 # CODEX MODIFICATION END: 3D total-ionization surface plot
 # ============================================================
+
+
+# ============================================================
+# Saved numerical variables
+# ============================================================
+
+def compute_total_ionization_surface_data(
+    case: CaseDict,
+    n_intensity_points: int = 80,
+    n_density_points: int = 80,
+    I_min_wcm2: float = 1.0e10,
+    I_max_wcm2: float = 1.0e15,
+    ne_min_cm3: float = 1.0e10,
+    ne_max_cm3: float = 1.0e22,
+) -> Dict[str, np.ndarray]:
+    """Return the numerical arrays used by a total-ionization 3D surface."""
+
+    if n_intensity_points < 2 or n_density_points < 2:
+        raise ValueError("Surface grids require at least two points per axis.")
+    if I_min_wcm2 <= 0.0 or I_max_wcm2 <= I_min_wcm2:
+        raise ValueError("Require 0 < I_min_wcm2 < I_max_wcm2.")
+    if ne_min_cm3 <= 0.0 or ne_max_cm3 <= ne_min_cm3:
+        raise ValueError("Require 0 < ne_min_cm3 < ne_max_cm3.")
+
+    wavelength_um = float(case["wavelength_um"])
+    omega = 2.0 * np.pi * C0 / (wavelength_um * 1.0e-6)
+    n0, _n2, Eg_J, mred, _trans = material_flag1(
+        mat_flag=int(case["mat_flag"]),
+        wavelength_um=wavelength_um,
+    )
+
+    I_values_wcm2 = np.logspace(
+        np.log10(I_min_wcm2), np.log10(I_max_wcm2), n_intensity_points
+    )
+    ne_values_cm3 = np.logspace(
+        np.log10(ne_min_cm3), np.log10(ne_max_cm3), n_density_points
+    )
+    I_grid_wcm2, ne_grid_cm3 = np.meshgrid(I_values_wcm2, ne_values_cm3)
+    I_grid_wm2 = I_grid_wcm2 * WM2_PER_WCM2
+    ne_grid_m3 = ne_grid_cm3 / CM3_PER_M3
+
+    Wpi_grid_m3_s = np.asarray(
+        keldysh_full_rate_m3_s(
+            omega=omega,
+            mred=mred,
+            delta_J=Eg_J,
+            n0=n0,
+            intensity_wm2=I_grid_wm2,
+        ),
+        dtype=float,
+    )
+    Wav_grid_m3_s = np.zeros_like(I_grid_wm2)
+    for row_index in range(I_grid_wm2.shape[0]):
+        for column_index in range(I_grid_wm2.shape[1]):
+            Wav_grid_m3_s[row_index, column_index] = avalanche_generation_rate_m3_s(
+                intensity_wm2=I_grid_wm2[row_index, column_index],
+                ne_m3=ne_grid_m3[row_index, column_index],
+                omega=omega,
+                mred=mred,
+                delta_J=Eg_J,
+                n0=n0,
+            )
+
+    Wtotal_grid_cm3_fs = (Wpi_grid_m3_s + Wav_grid_m3_s) * RATE_CM3_FS_PER_M3_S
+    return {
+        "I_values_wcm2": I_values_wcm2,
+        "ne_values_cm3": ne_values_cm3,
+        "I_grid_wcm2": I_grid_wcm2,
+        "ne_grid_cm3": ne_grid_cm3,
+        "Wpi_grid_m3_s": Wpi_grid_m3_s,
+        "Wav_grid_m3_s": Wav_grid_m3_s,
+        "Wtotal_grid_cm3_fs": Wtotal_grid_cm3_fs,
+        "log10_I_grid_wcm2": np.log10(I_grid_wcm2),
+        "log10_ne_grid_cm3": np.log10(ne_grid_cm3),
+        "log10_Wtotal_grid_cm3_fs": np.log10(
+            np.maximum(
+                np.nan_to_num(Wtotal_grid_cm3_fs, nan=0.0, posinf=0.0, neginf=0.0),
+                1.0e-300,
+            )
+        ),
+    }
+
+
+def _case_export_metadata(case: CaseDict) -> Dict[str, Any]:
+    """Return JSON-safe inputs and derived material values for one case."""
+
+    wavelength_um = float(case["wavelength_um"])
+    n0, n2, Eg_J, mred, trans = material_flag1(
+        mat_flag=int(case["mat_flag"]),
+        wavelength_um=wavelength_um,
+    )
+    metadata: Dict[str, Any] = {
+        "short": str(case["short"]),
+        "name": str(case["name"]),
+        "material": str(case["material"]),
+        "region": str(case["region"]),
+        "mat_flag": int(case["mat_flag"]),
+        "wavelength_um": wavelength_um,
+        "tau_fs": float(case["tau_fs"]),
+        "F0_jcm2": None if case.get("F0_jcm2") is None else float(case["F0_jcm2"]),
+        "reference_I0_wcm2": case.get("reference_I0_wcm2"),
+        "I0_wcm2": case_reference_peak_intensity_wcm2(case),
+        "n0": float(n0),
+        "n2_m2_per_w": float(n2) if np.isfinite(n2) else None,
+        "Eg_eV": float(Eg_J / E_CHARGE),
+        "mred_over_me": float(mred / ME0),
+        "transmission_factor": float(trans),
+    }
+    for key in ("pulse_energy_uj", "beam_diameter_a_um", "beam_diameter_b_um"):
+        if case.get(key) is not None:
+            metadata[key] = float(case[key])
+    return metadata
+
+
+def _write_csv(path: Path, rows: Sequence[Dict[str, Any]]) -> None:
+    """Write a long-format CSV with stable columns and UTF-8 encoding."""
+
+    if not rows:
+        return
+    fieldnames = list(rows[0])
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def save_baf2_plot_variables(
+    cases: Sequence[CaseDict],
+    output_dir: Path,
+    component_n_intensity_points: int = 50,
+    total_n_intensity_points: int = 50,
+    surface_n_intensity_points: int = 50,
+    surface_n_density_points: int = 80,
+) -> None:
+    """Save BaF2 plot arrays, metadata, and long-format tables.
+
+    Files mirror the ``various`` workflow: a compressed NPZ archive, a JSON
+    manifest containing units and figure mappings, and CSV tables for scaling
+    data. Only currently enabled cases are exported.
+    """
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    component_I_values_wcm2 = np.logspace(10, 15, component_n_intensity_points)
+    total_I_values_wcm2 = np.logspace(
+        np.log10(5.0e10), np.log10(1.0e15), total_n_intensity_points
+    )
+    arrays: Dict[str, np.ndarray] = {}
+    component_rows: List[Dict[str, Any]] = []
+    total_rows: List[Dict[str, Any]] = []
+    component_manifest: Dict[str, Any] = {}
+    total_manifest: Dict[str, Any] = {}
+    surface_manifest: Dict[str, Any] = {}
+    case_metadata: Dict[str, Any] = {}
+
+    print("\nSaving labeled BaF2 plot variables ...")
+    for case in cases:
+        short = str(case["short"])
+        metadata = _case_export_metadata(case)
+        case_metadata[short] = metadata
+
+        component = compute_case_scaling_components(
+            case=case,
+            I_values_wcm2=component_I_values_wcm2,
+            n_time_points=600,
+        )
+        component_manifest[short] = {
+            "used_by": ["BaF2_fig2_NIR.png", "BaF2_fig4_NIR_scaling.png"],
+            "arrays": {},
+        }
+        for name, values in component.items():
+            array_name = f"component__{short}__{name}"
+            arrays[array_name] = np.asarray(values, dtype=float)
+            component_manifest[short]["arrays"][name] = array_name
+
+        component_gamma = np.asarray(
+            gamma_baf2_reference_from_intensity_wcm2(
+                component["I_wcm2"],
+                wavelength_um=float(case["wavelength_um"]),
+                include_field_factor_two=True,
+            ),
+            dtype=float,
+        )
+        component_gamma_name = f"component__{short}__gamma_baf2_reference"
+        arrays[component_gamma_name] = component_gamma
+        component_manifest[short]["arrays"]["gamma_baf2_reference"] = component_gamma_name
+
+        for index, intensity in enumerate(component["I_wcm2"]):
+            component_rows.append(
+                {
+                    **metadata,
+                    "dataset": "component_scaling",
+                    "point_index": int(index),
+                    "I_wcm2": float(intensity),
+                    "gamma_baf2_reference": float(component_gamma[index]),
+                    "Wpi_peak_cm3_fs": float(component["Wpi_peak_cm3_fs"][index]),
+                    "Wav_peak_cm3_fs": float(component["Wav_peak_cm3_fs"][index]),
+                    "Wtotal_peak_cm3_fs": float(component["Wtotal_peak_cm3_fs"][index]),
+                    "ne_max_cm3": float(component["ne_max_cm3"][index]),
+                }
+            )
+
+        total = compute_case_scaling_components(
+            case=case,
+            I_values_wcm2=total_I_values_wcm2,
+            n_time_points=600,
+        )
+        total_manifest[short] = {
+            "used_by": ["NIR total-ionization scaling"],
+            "arrays": {},
+        }
+        for name, values in total.items():
+            array_name = f"total_comparison__{short}__{name}"
+            arrays[array_name] = np.asarray(values, dtype=float)
+            total_manifest[short]["arrays"][name] = array_name
+
+        total_gamma = np.asarray(
+            gamma_baf2_reference_from_intensity_wcm2(
+                total["I_wcm2"],
+                wavelength_um=float(case["wavelength_um"]),
+                include_field_factor_two=True,
+            ),
+            dtype=float,
+        )
+        total_gamma_name = f"total_comparison__{short}__gamma_baf2_reference"
+        arrays[total_gamma_name] = total_gamma
+        total_manifest[short]["arrays"]["gamma_baf2_reference"] = total_gamma_name
+
+        for index, intensity in enumerate(total["I_wcm2"]):
+            total_rows.append(
+                {
+                    **metadata,
+                    "dataset": "total_comparison",
+                    "point_index": int(index),
+                    "I_wcm2": float(intensity),
+                    "gamma_baf2_reference": float(total_gamma[index]),
+                    "Wtotal_peak_cm3_fs": float(total["Wtotal_peak_cm3_fs"][index]),
+                }
+            )
+
+        surface = compute_total_ionization_surface_data(
+            case=case,
+            n_intensity_points=surface_n_intensity_points,
+            n_density_points=surface_n_density_points,
+        )
+        surface_manifest[short] = {
+            "used_by": [f"05_total_ionization_3d_{short}.png"],
+            "arrays": {},
+        }
+        for name, values in surface.items():
+            array_name = f"surface3d__{short}__{name}"
+            arrays[array_name] = np.asarray(values, dtype=float)
+            surface_manifest[short]["arrays"][name] = array_name
+
+    manifest = {
+        "description": "Labeled variables for BaF2 Keldysh and avalanche-ionization plots.",
+        "enabled_cases": list(case_metadata),
+        "case_metadata": case_metadata,
+        "units": {
+            "I_wcm2": "W/cm^2",
+            "F0_jcm2": "J/cm^2",
+            "Wpi_peak_cm3_fs": "cm^-3 fs^-1",
+            "Wav_peak_cm3_fs": "cm^-3 fs^-1",
+            "Wtotal_peak_cm3_fs": "cm^-3 fs^-1",
+            "ne_max_cm3": "cm^-3",
+            "Wpi_grid_m3_s": "m^-3 s^-1",
+            "Wav_grid_m3_s": "m^-3 s^-1",
+            "Wtotal_grid_cm3_fs": "cm^-3 fs^-1",
+            "ne_grid_cm3": "cm^-3",
+            "gamma_baf2_reference": "dimensionless",
+        },
+        "files": {
+            "numpy_arrays": "baf2_variables.npz",
+            "manifest": "baf2_manifest.json",
+            "component_scaling_csv": "baf2_component_scaling_long.csv",
+            "total_comparison_csv": "baf2_total_comparison_long.csv",
+        },
+        "component_scaling": component_manifest,
+        "total_comparison": total_manifest,
+        "surface3d": surface_manifest,
+    }
+    np.savez_compressed(output_dir / "baf2_variables.npz", **arrays)
+    with (output_dir / "baf2_manifest.json").open("w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, indent=2, allow_nan=False)
+    _write_csv(output_dir / "baf2_component_scaling_long.csv", component_rows)
+    _write_csv(output_dir / "baf2_total_comparison_long.csv", total_rows)
+    print(f"Saved BaF2 variables to {output_dir}")
 
 
 # ============================================================
@@ -2397,20 +2722,12 @@ def run_first_last_table_workflow(
     points: int,
     save_dir: Optional[Path],
 ) -> None:
-    """Run the compact workflow: first graph set, table, and last graph set."""
+    """Run the enabled NIR workflow: rate curves and density table."""
 
     plot_keldysh_rate_curves(cases=cases, save_dir=save_dir)
     solve_and_display_summary(cases)
-    plot_total_ionization_nir_lwir_comparison_with_gamma_axis(
-        cases=cases,
-        n_intensity_points=points,
-        I_min_wcm2=5.0e10,
-        I_max_wcm2=1.0e15,
-        y_min=1.0e0,
-        y_max=1.0e30,
-        include_field_factor_two=False,
-        save_dir=save_dir,
-    )
+    # Disabled with the 9.2-um case: this plot requires both NIR and LWIR.
+    # plot_total_ionization_nir_lwir_comparison_with_gamma_axis(...)
 
 
 def run_all_plots_workflow(
@@ -2422,16 +2739,8 @@ def run_all_plots_workflow(
 
     plot_keldysh_rate_curves(cases=cases, save_dir=save_dir)
     solve_and_display_summary(cases)
-    plot_total_ionization_nir_lwir_comparison_with_gamma_axis(
-        cases=cases,
-        n_intensity_points=points,
-        I_min_wcm2=5.0e10,
-        I_max_wcm2=1.0e15,
-        y_min=1.0e0,
-        y_max=1.0e30,
-        include_field_factor_two=False,
-        save_dir=save_dir,
-    )
+    # Disabled with the 9.2-um case: this plot requires both NIR and LWIR.
+    # plot_total_ionization_nir_lwir_comparison_with_gamma_axis(...)
     plot_baf2_figures(
         cases=cases,
         n_intensity_points=points,
@@ -2475,7 +2784,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--save",
         action="store_true",
-        help="Save figures instead of displaying them.",
+        help="Save figures and labeled numerical variables instead of displaying figures.",
     )
     # CODEX MODIFICATION START: optional open saved image preview
     parser.add_argument(
@@ -2507,7 +2816,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--outdir",
         type=str,
-        default="figures_Keldsyh_II_BaF2",
+        default=str(Path(__file__).resolve().parent / "figures_Keldsyh_II_BaF2"),
         help="Directory used when --save is specified.",
     )
     # CODEX MODIFICATION START: CLI support for 3D surface plot
@@ -2515,11 +2824,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--case-index",
         type=int,
         default=None,
-        choices=range(2),
-        metavar="{0,1}",
+        choices=range(1),
+        metavar="{0}",
         help=(
-            "Optional case used by --mode 3d: 0 BaF2_NIR, 1 BaF2_LWIR. "
-            "If omitted, both BaF2 cases are plotted."
+            "Optional case used by --mode 3d: 0 BaF2_NIR. "
+            "If omitted, all enabled cases are plotted."
         ),
     )
     parser.add_argument(
@@ -2592,6 +2901,17 @@ def main(argv: Optional[List[str]] = None) -> None:
     # CODEX MODIFICATION END: CLI support for 3D surface plot
     else:
         run_all_plots_workflow(cases, args.points, save_dir)
+
+    if args.save:
+        assert save_dir is not None
+        save_baf2_plot_variables(
+            cases=cases,
+            output_dir=save_dir / "saved_variables",
+            component_n_intensity_points=args.points,
+            total_n_intensity_points=args.points,
+            surface_n_intensity_points=args.points,
+            surface_n_density_points=args.density_points,
+        )
 
     # CODEX MODIFICATION START: display all Matplotlib windows after plotting
     if DEFER_FIGURE_SHOW:
