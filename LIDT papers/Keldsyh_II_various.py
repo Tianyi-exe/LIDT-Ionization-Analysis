@@ -104,9 +104,10 @@ ArrayLike = Union[np.ndarray, float]
 DEFER_FIGURE_SHOW = False
 # CODEX MODIFICATION END: optional deferred Matplotlib display
 
-# CODEX MODIFICATION START: optional editable figure exports
-SAVE_EDITABLE_FIGURES = False
-# CODEX MODIFICATION END: optional editable figure exports
+# CODEX MODIFICATION START: automatic editable figure exports
+# Every saved PNG is accompanied by a Matplotlib-editable .mplfig.pkl file.
+SAVE_EDITABLE_FIGURES = True
+# CODEX MODIFICATION END: automatic editable figure exports
 
 # CODEX MODIFICATION START: optional open saved image preview
 OPEN_SAVED_FIGURES = False
@@ -750,13 +751,13 @@ def save_or_show(
         if OPEN_SAVED_FIGURES and hasattr(os, "startfile"):
             os.startfile(output_path)
         # CODEX MODIFICATION END: optional open saved image preview
-        # CODEX MODIFICATION START: optional editable figure exports
-        if SAVE_EDITABLE_FIGURES:
-            editable_path = output_path.with_suffix(".mplfig.pkl")
-            with editable_path.open("wb") as editable_file:
-                pickle.dump(fig, editable_file)
-            print(f"Saved editable Matplotlib figure {editable_path}")
-        # CODEX MODIFICATION END: optional editable figure exports
+        # Temporarily disabled: editable Matplotlib .mplfig.pkl export.
+        # Uncomment this block to restore Python-figure saving.
+        # if SAVE_EDITABLE_FIGURES:
+        #     editable_path = output_path.with_suffix(".mplfig.pkl")
+        #     with editable_path.open("wb") as editable_file:
+        #         pickle.dump(fig, editable_file)
+        #     print(f"Saved editable Matplotlib figure {editable_path}")
         # CODEX MODIFICATION START: allow saved figures to display at end
         if DEFER_FIGURE_SHOW:
             print(f"Prepared saved figure for display: {filename}")
@@ -986,6 +987,21 @@ def compute_case_scaling(
     }
     SCALING_CACHE[cache_key] = output
     return output
+
+
+def direct_peak_total_rate_at_intensity(
+    case: CaseDict,
+    I0_wcm2: float,
+    n_time_points: int = 600,
+) -> float:
+    """Solve at one specified intensity instead of interpolating a scan."""
+
+    scaling = compute_case_scaling(
+        case=case,
+        I_values_wcm2=np.asarray([float(I0_wcm2)]),
+        n_time_points=n_time_points,
+    )
+    return float(scaling["Wtotal_peak_cm3_fs"][0])
 
 
 def solve_density_case(case: CaseDict) -> Dict[str, Any]:
@@ -1266,7 +1282,7 @@ def plot_keldysh_rate_curves(
 def gamma_zns_reference_from_intensity_wcm2(
     I_wcm2: ArrayLike,
     wavelength_um: float,
-    include_field_factor_two: bool = False,
+    include_field_factor_two: bool = True,
 ) -> ArrayLike:
     """
     Evaluate the Keldysh parameter using ZnS as the reference material.
@@ -1321,7 +1337,7 @@ def gamma_zns_reference_from_intensity_wcm2(
 def intensity_wcm2_from_gamma_zns_reference(
     gamma: ArrayLike,
     wavelength_um: float,
-    include_field_factor_two: bool = False,
+    include_field_factor_two: bool = True,
 ) -> ArrayLike:
     """
     Convert a ZnS-reference Keldysh parameter to intensity in W/cm^2.
@@ -1357,7 +1373,7 @@ def add_zns_gamma_top_axis(
     ax: plt.Axes,
     wavelength_um: float,
     gamma_ticks: Tuple[float, ...],
-    include_field_factor_two: bool = False,
+    include_field_factor_two: bool = True,
 ) -> None:
     """
     Add a ZnS-reference Keldysh-parameter axis above an intensity axis.
@@ -1402,7 +1418,7 @@ def plot_total_ionization_nir_lwir_comparison_with_gamma_axis(
     I_max_wcm2: float = 1.0e15,
     y_min: float = 1.0e0,
     y_max: float = 1.0e30,
-    include_field_factor_two: bool = False,
+    include_field_factor_two: bool = True,
     save_dir: Optional[Path] = None,
 ) -> None:
     """
@@ -1465,16 +1481,14 @@ def plot_total_ionization_nir_lwir_comparison_with_gamma_axis(
             )
 
             I_lidt = case_lidt_peak_intensity_wcm2(case)
-            W_lidt = interpolate_log_y(I, Wtotal, I_lidt)
-
-            if W_lidt is not None:
-                ax.plot(
-                    I_lidt,
-                    W_lidt,
-                    "kx",
-                    markersize=8.5,
-                    markeredgewidth=2.0,
-                )
+            W_lidt = direct_peak_total_rate_at_intensity(case, I_lidt)
+            ax.plot(
+                I_lidt,
+                W_lidt,
+                "kx",
+                markersize=8.5,
+                markeredgewidth=2.0,
+            )
 
         I_gamma_1 = float(
             intensity_wcm2_from_gamma_zns_reference(
@@ -1827,6 +1841,7 @@ def save_pi_ii_14_plot_variables(
     }
     component_rows: List[Dict[str, Any]] = []
     total_rows: List[Dict[str, Any]] = []
+    surface_rows: List[Dict[str, Any]] = []
     component_manifest: Dict[str, Any] = {}
     total_manifest: Dict[str, Any] = {}
     surface_manifest: Dict[str, Any] = {}
@@ -1837,6 +1852,11 @@ def save_pi_ii_14_plot_variables(
         case_label = _case_with_derived_labels(case)
         short = case_label["short"]
         wavelength_um = float(case["wavelength_um"])
+        Wtotal_direct_at_lidt_cm3_fs = direct_peak_total_rate_at_intensity(
+            case,
+            case_lidt_peak_intensity_wcm2(case),
+            n_time_points=600,
+        )
 
         component = compute_case_scaling_components(
             case=case,
@@ -1917,6 +1937,7 @@ def save_pi_ii_14_plot_variables(
                 "I_wcm2": float(I_value),
                 "gamma_zns_reference": float(gamma_total[index]),
                 "Wtotal_peak_cm3_fs": float(total["Wtotal_peak_cm3_fs"][index]),
+                "Wtotal_direct_at_lidt_cm3_fs": Wtotal_direct_at_lidt_cm3_fs,
             }
             total_rows.append(row)
 
@@ -1936,6 +1957,41 @@ def save_pi_ii_14_plot_variables(
             array_name = f"surface3d__{short}__{name}"
             arrays[array_name] = np.asarray(values, dtype=float)
             surface_manifest[short]["arrays"][name] = array_name
+
+        for density_index in range(surface["I_grid_wcm2"].shape[0]):
+            for intensity_index in range(surface["I_grid_wcm2"].shape[1]):
+                surface_rows.append(
+                    {
+                        **case_label,
+                        "dataset": "surface3d",
+                        "density_index": density_index,
+                        "intensity_index": intensity_index,
+                        "I_wcm2": float(
+                            surface["I_grid_wcm2"][density_index, intensity_index]
+                        ),
+                        "ne_cm3": float(
+                            surface["ne_grid_cm3"][density_index, intensity_index]
+                        ),
+                        "log10_I_grid_wcm2": float(
+                            surface["log10_I_grid_wcm2"][density_index, intensity_index]
+                        ),
+                        "log10_ne_grid_cm3": float(
+                            surface["log10_ne_grid_cm3"][density_index, intensity_index]
+                        ),
+                        "Wpi_grid_cm3_fs": float(
+                            surface["Wpi_grid_cm3_fs"][density_index, intensity_index]
+                        ),
+                        "Wav_grid_cm3_fs": float(
+                            surface["Wav_grid_cm3_fs"][density_index, intensity_index]
+                        ),
+                        "Wtotal_grid_cm3_fs": float(
+                            surface["Wtotal_grid_cm3_fs"][density_index, intensity_index]
+                        ),
+                        "log10_Wtotal_grid_cm3_fs": float(
+                            surface["log10_Wtotal_grid_cm3_fs"][density_index, intensity_index]
+                        ),
+                    }
+                )
 
     manifest = {
         "description": (
@@ -1975,6 +2031,7 @@ def save_pi_ii_14_plot_variables(
             "manifest": "pi_ii_14_manifest.json",
             "component_scaling_csv": "pi_ii_14_component_scaling_long.csv",
             "total_comparison_csv": "pi_ii_14_total_comparison_long.csv",
+            "surface3d_csv": "pi_ii_14_surface3d_long.csv",
         },
         "figure_panels_14": [
             {
@@ -2056,6 +2113,7 @@ def save_pi_ii_14_plot_variables(
 
     write_csv(output_dir / "pi_ii_14_component_scaling_long.csv", component_rows)
     write_csv(output_dir / "pi_ii_14_total_comparison_long.csv", total_rows)
+    write_csv(output_dir / "pi_ii_14_surface3d_long.csv", surface_rows)
 
     print(f"Saved PI/II variables to {output_dir}")
 
@@ -2594,7 +2652,11 @@ def main() -> None:
 
     cases = get_cases()
     # Keep this multi-material workflow separate from the BaF2 workflow.
-    save_dir = Path("figures_Keldsyh_II_various")
+    save_dir = (
+        Path(__file__).resolve().parent
+        / "figures_Keldsyh_II"
+        / "figures_Keldsyh_II_various"
+    )
     variable_dir = save_dir / "saved_variables"
 
     plot_keldysh_rate_curves(cases=cases, save_dir=save_dir)
@@ -2614,7 +2676,7 @@ def main() -> None:
         I_max_wcm2=1.0e15,
         y_min=1.0e0,
         y_max=1.0e30,
-        include_field_factor_two=False,
+        include_field_factor_two=True,
         save_dir=save_dir,
     )
     plot_znse_zns_figures(

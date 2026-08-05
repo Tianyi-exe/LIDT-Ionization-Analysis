@@ -1,8 +1,10 @@
 clc; clear; close all;
+set(groot, 'DefaultAxesFontSize', 16, 'DefaultTextFontSize', 16, ...
+    'DefaultLegendFontSize', 16, 'DefaultColorbarFontSize', 16);
 
 % === Beam profile analysis for BaF2 07_10_26 ===
-% baseFolder = "C:\Users\Faculty\OneDrive - The City University of New York\Tasks\BNL2026\LIDT2026\NIR Beam Profile\07_23_26";
-baseFolder = 'D:\OneDrive - The City University of New York\Tasks\BNL2026\LIDT2026\NIR Beam Profile\07_23_26';
+baseFolder = "C:\Users\Faculty\OneDrive - The City University of New York\Tasks\BNL2026\LIDT2026\NIR Beam Profile\07_23_26";
+% baseFolder = 'D:\OneDrive - The City University of New York\Tasks\BNL2026\LIDT2026\NIR Beam Profile\07_23_26';
 
 folderPath = fullfile(baseFolder, "beamprofile");
 bgPath = fullfile(baseFolder, "Bg_Image__2026-07-23__12-14-56.png");
@@ -134,7 +136,7 @@ for i = 1:N
                          yrange(2) - 0.10*diff(yrange), ...
                          '', ...
                          'Color', 'w', ...
-                         'FontSize', 9, ...
+                         'FontSize', 16, ...
                          'FontWeight', 'bold', ...
                          'Interpreter', 'tex');
 
@@ -163,7 +165,7 @@ for i = 1:N
     set(hMeasureX, 'ButtonDownFcn', @(~, ~) startMeasureCursorDrag(beamFig, ax, 'x'));
     set(hMeasureY, 'ButtonDownFcn', @(~, ~) startMeasureCursorDrag(beamFig, ax, 'y'));
 
-    title(imageFiles(i).name, 'Interpreter', 'none', 'FontWeight', 'bold', 'FontSize', 10);
+    title(imageFiles(i).name, 'Interpreter', 'none', 'FontWeight', 'bold', 'FontSize', 16);
     xlabel('X (\mum)', 'Interpreter', 'tex');
     ylabel('Y (\mum)', 'Interpreter', 'tex');
     xlim(xrange);
@@ -181,7 +183,7 @@ for i = 1:N
     view(45, 35);
     axis tight;
     grid on;
-    title(imageFiles(i).name, 'Interpreter', 'none', 'FontWeight', 'bold', 'FontSize', 10);
+    title(imageFiles(i).name, 'Interpreter', 'none', 'FontWeight', 'bold', 'FontSize', 16);
     xlabel('X (\mum)', 'Interpreter', 'tex');
     ylabel('Y (\mum)', 'Interpreter', 'tex');
     zlabel('Signal (a.u.)');

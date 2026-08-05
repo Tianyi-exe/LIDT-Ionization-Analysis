@@ -47,9 +47,8 @@ Units
 
 Default workflow
 ----------------
-The default ``--mode all`` execution currently produces only BaF2 NIR
-(0.8-um, 100-fs) results. The 9.2-um case is retained below as a commented
-reference block until its experimental fluence inputs are available.
+The default ``--mode all`` execution produces BaF2 NIR (0.8 um, 100 fs)
+and LWIR (9.2 um, 2 ps) results using their supplied LIDT fluences.
 """
 
 
@@ -92,6 +91,7 @@ EPS0 = 8.8541878188e-12
 E_CHARGE = 1.602176634e-19
 HBAR = 1.054571817e-34
 ME0 = 9.1093837139e-31
+AVOGADRO = 6.02214076e23
 # CODEX MODIFICATION END: constants from BaF2 verified reference / CODATA
 
 CM3_PER_M3 = 1.0e-6
@@ -106,9 +106,10 @@ ArrayLike = Union[np.ndarray, float]
 DEFER_FIGURE_SHOW = False
 # CODEX MODIFICATION END: optional deferred Matplotlib display
 
-# CODEX MODIFICATION START: optional editable figure exports
-SAVE_EDITABLE_FIGURES = False
-# CODEX MODIFICATION END: optional editable figure exports
+# CODEX MODIFICATION START: automatic editable figure exports
+# Every saved PNG is accompanied by a Matplotlib-editable .mplfig.pkl file.
+SAVE_EDITABLE_FIGURES = True
+# CODEX MODIFICATION END: automatic editable figure exports
 
 # CODEX MODIFICATION START: optional open saved image preview
 OPEN_SAVED_FIGURES = False
@@ -122,6 +123,7 @@ OPEN_SAVED_FIGURES = False
 # CODEX MODIFICATION START: explicit BaF2 input block used by this script
 BAF2_INPUT: Dict[str, Any] = {
     "reference_file": "BaF2_Keldysh_Parameter.docx",
+    "threshold_fluence_reference_file": "BaF2_Threshold_Fluence_Parameter.docx",
     "material": {
         "name": "BaF2",
         "mat_flag": 1,
@@ -140,6 +142,20 @@ BAF2_INPUT: Dict[str, Any] = {
                 (3.8261, 46.3864),
             ),
         },
+    },
+    "threshold_fluence": {
+        "model": "F_th = [3*n_a*lambda/(16*pi)]*(epsilon_b + E_g)",
+        "mass_density_kg_m3": 4890.0,
+        "molar_mass_kg_mol": 0.175323806,
+        "binding_energy_ev_per_atom": 6.013333333333334,
+        "binding_energy_note": (
+            "BaF2 cohesive/binding energy = 18.04 eV per formula unit, "
+            "converted to 18.04/3 = 6.0133 eV per atom."
+        ),
+        "atomic_density_note": (
+            "n_a is the total atomic number density: "
+            "n_a = 3*rho*N_A/M_BaF2."
+        ),
     },
     "cases": [
         {
@@ -162,19 +178,21 @@ BAF2_INPUT: Dict[str, Any] = {
                 "are radii derived from the measured diameters."
             ),
         },
-        # 9.2-um / LWIR case deliberately disabled until pulse energy and
-        # elliptical beam diameters are supplied for its fluence calculation.
-        # {
-        #     "name": r"BaF$_2$, 9.2 $\mu$m",
-        #     "short": "BaF2_LWIR",
-        #     "material": "BaF2",
-        #     "region": "LWIR",
-        #     "mat_flag": 1,
-        #     "wavelength_um": 9.2,
-        #     "tau_fs": 2000.0,
-        #     "reference_I0_wcm2": None,
-        #     "F0_jcm2": None,
-        # },
+        {
+            "name": r"BaF$_2$, 9.2 $\mu$m",
+            "short": "BaF2_LWIR",
+            "material": "BaF2",
+            "region": "LWIR",
+            "mat_flag": 1,
+            "wavelength_um": 9.2,
+            "tau_fs": 2000.0,
+            "reference_I0_wcm2": None,
+            "F0_jcm2": 4.57,
+            "input_note": (
+                "User-supplied LWIR LIDT condition: 9.2 um, 2 ps, "
+                "F0 = 4.57 J/cm^2."
+            ),
+        },
     ],
 }
 # CODEX MODIFICATION END: explicit BaF2 input block used by this script
@@ -250,15 +268,86 @@ def material_flag1(
 # Case definitions
 # ============================================================
 
+def baf2_total_atomic_density_m3(
+    mass_density_kg_m3: float,
+    molar_mass_kg_mol: float,
+) -> float:
+    """Return the total Ba and F atomic number density of BaF2 in m^-3."""
+
+    density = float(mass_density_kg_m3)
+    molar_mass = float(molar_mass_kg_mol)
+    if density <= 0.0:
+        raise ValueError("mass_density_kg_m3 must be positive.")
+    if molar_mass <= 0.0:
+        raise ValueError("molar_mass_kg_mol must be positive.")
+
+    # One BaF2 formula unit contains three atoms (one Ba and two F).
+    return float(3.0 * density * AVOGADRO / molar_mass)
+
+
+def threshold_fluence_comparison(case: CaseDict) -> Dict[str, float]:
+    """Evaluate the standalone BaF2 threshold-fluence comparison.
+
+    The model is
+
+        F_th = [3 n_a lambda / (16 pi)] (epsilon_b + E_g).
+
+    ``n_a`` is the total atomic density in m^-3, ``lambda`` is in m, and
+    both energies are in J.  The calculation is intentionally independent of
+    the Keldysh PI/II rates and of the pulse duration.
+    """
+
+    threshold_input = BAF2_INPUT["threshold_fluence"]
+    mass_density_kg_m3 = float(threshold_input["mass_density_kg_m3"])
+    molar_mass_kg_mol = float(threshold_input["molar_mass_kg_mol"])
+    binding_energy_ev_per_atom = float(
+        threshold_input["binding_energy_ev_per_atom"]
+    )
+    wavelength_um = float(case["wavelength_um"])
+    F0_jcm2 = float(case["F0_jcm2"])
+
+    if wavelength_um <= 0.0:
+        raise ValueError("wavelength_um must be positive.")
+    if binding_energy_ev_per_atom < 0.0:
+        raise ValueError("binding_energy_ev_per_atom must be nonnegative.")
+    if F0_jcm2 < 0.0:
+        raise ValueError("F0_jcm2 must be nonnegative.")
+
+    atomic_density_m3 = baf2_total_atomic_density_m3(
+        mass_density_kg_m3=mass_density_kg_m3,
+        molar_mass_kg_mol=molar_mass_kg_mol,
+    )
+    wavelength_m = wavelength_um * 1.0e-6
+    Eg_ev = float(BAF2_INPUT["material"]["bandgap_ev"])
+    threshold_fluence_jm2 = (
+        3.0
+        * atomic_density_m3
+        * wavelength_m
+        * (binding_energy_ev_per_atom + Eg_ev)
+        * E_CHARGE
+        / (16.0 * np.pi)
+    )
+    threshold_fluence_jcm2 = threshold_fluence_jm2 * 1.0e-4
+
+    return {
+        "atomic_density_m3": float(atomic_density_m3),
+        "binding_energy_ev_per_atom": float(binding_energy_ev_per_atom),
+        "threshold_fluence_jm2": float(threshold_fluence_jm2),
+        "threshold_fluence_jcm2": float(threshold_fluence_jcm2),
+        "F0_jcm2": float(F0_jcm2),
+        "F0_over_Fth": float(F0_jcm2 / threshold_fluence_jcm2),
+    }
+
+
 # CODEX MODIFICATION START: BaF2-only case definitions
 def get_cases() -> List[CaseDict]:
     """
-    Return the currently enabled BaF2 cases (NIR only).
+    Return the currently enabled BaF2 NIR and LWIR cases.
 
     Returns
     -------
     list of dict
-        One material/laser case dictionary.
+        Two BaF2 material/laser case dictionaries.
     """
 
     cases: List[CaseDict] = []
@@ -270,6 +359,8 @@ def get_cases() -> List[CaseDict]:
                 beam_diameter_a_um=float(case["beam_diameter_a_um"]),
                 beam_diameter_b_um=float(case["beam_diameter_b_um"]),
             )
+        if case.get("F0_jcm2") is not None:
+            case["threshold_fluence"] = threshold_fluence_comparison(case)
         cases.append(case)
     return cases
 # CODEX MODIFICATION END: BaF2-only case definitions
@@ -761,6 +852,34 @@ def report_case_input_uncertainties(cases: Sequence[CaseDict]) -> None:
         )
 
 
+def report_threshold_fluence_comparison(cases: Sequence[CaseDict]) -> None:
+    """Print the standalone threshold-fluence result for each enabled case."""
+
+    print("\n================ Threshold-fluence comparison ================\n")
+    for case in cases:
+        comparison = case.get("threshold_fluence")
+        if comparison is None:
+            print(f"{case['short']}: threshold-fluence inputs are unavailable.")
+            continue
+
+        print(f"{case['short']}:")
+        print(
+            f"  n_a = {comparison['atomic_density_m3']:.4e} m^-3 "
+            "(total atomic density)"
+        )
+        print(
+            f"  epsilon_b = {comparison['binding_energy_ev_per_atom']:.4f} eV/atom"
+        )
+        print(
+            f"  F_th = {comparison['threshold_fluence_jm2']:.4e} J/m^2 "
+            f"= {comparison['threshold_fluence_jcm2']:.4f} J/cm^2"
+        )
+        print(
+            f"  F0/F_th = {comparison['F0_over_Fth']:.4f} "
+            f"(F0 = {comparison['F0_jcm2']:.4f} J/cm^2)\n"
+        )
+
+
 def case_reference_peak_intensity_wcm2(case: CaseDict) -> float:
     """
     Return the peak intensity used for time-domain density calculations.
@@ -888,13 +1007,13 @@ def save_or_show(
         if OPEN_SAVED_FIGURES and hasattr(os, "startfile"):
             os.startfile(output_path)
         # CODEX MODIFICATION END: optional open saved image preview
-        # CODEX MODIFICATION START: optional editable figure exports
-        if SAVE_EDITABLE_FIGURES:
-            editable_path = output_path.with_suffix(".mplfig.pkl")
-            with editable_path.open("wb") as editable_file:
-                pickle.dump(fig, editable_file)
-            print(f"Saved editable Matplotlib figure {editable_path}")
-        # CODEX MODIFICATION END: optional editable figure exports
+        # Temporarily disabled: editable Matplotlib .mplfig.pkl export.
+        # Uncomment this block to restore Python-figure saving.
+        # if SAVE_EDITABLE_FIGURES:
+        #     editable_path = output_path.with_suffix(".mplfig.pkl")
+        #     with editable_path.open("wb") as editable_file:
+        #         pickle.dump(fig, editable_file)
+        #     print(f"Saved editable Matplotlib figure {editable_path}")
         # CODEX MODIFICATION START: allow saved figures to display at end
         if DEFER_FIGURE_SHOW:
             print(f"Prepared saved figure for display: {filename}")
@@ -1126,6 +1245,21 @@ def compute_case_scaling(
     return output
 
 
+def direct_peak_total_rate_at_intensity(
+    case: CaseDict,
+    I0_wcm2: float,
+    n_time_points: int = 600,
+) -> float:
+    """Solve at one specified intensity instead of interpolating a scan."""
+
+    scaling = compute_case_scaling(
+        case=case,
+        I_values_wcm2=np.asarray([float(I0_wcm2)]),
+        n_time_points=n_time_points,
+    )
+    return float(scaling["Wtotal_peak_cm3_fs"][0])
+
+
 def solve_density_case(case: CaseDict) -> Dict[str, Any]:
     """
     Solve photoionization-only and photoionization-plus-avalanche density growth.
@@ -1253,6 +1387,8 @@ def build_summary_table(results: Sequence[Dict[str, Any]]) -> List[Dict[str, Any
                 "lambda_um": case["wavelength_um"],
                 "tau_fs": case["tau_fs"],
                 "F0_Jcm2": case["F0_jcm2"],
+                "Fth_Jcm2": case["threshold_fluence"]["threshold_fluence_jcm2"],
+                "F0_over_Fth": case["threshold_fluence"]["F0_over_Fth"],
                 "I0_source": case_peak_intensity_source(case),
                 "I0_Wcm2": result["I0_wcm2"],
                 "n_photo_cm3": result["ne_photo_cm3"],
@@ -1551,7 +1687,7 @@ def plot_total_ionization_nir_lwir_comparison_with_gamma_axis(
     save_dir: Optional[Path] = None,
 ) -> None:
     """
-    Plot peak total ionization rate for BaF2 in NIR and LWIR.
+    Plot peak total ionization rate for the enabled BaF2 wavelength regimes.
 
     Each panel includes a BaF2-reference Keldysh-parameter top axis and a
     dashed vertical line at gamma = 1.
@@ -1569,6 +1705,12 @@ def plot_total_ionization_nir_lwir_comparison_with_gamma_axis(
     )
 
     regime_order = ["NIR", "LWIR"]
+    enabled_regimes = [
+        regime for regime in regime_order
+        if any(case["region"] == regime for case in cases)
+    ]
+    if not enabled_regimes:
+        raise ValueError("At least one BaF2 NIR or LWIR case is required.")
     panel_labels = {"NIR": "(a) NIR", "LWIR": "(b) LWIR"}
     gamma_ticks_by_regime = {
         "NIR": (10.0, 3.0, 1.0, 0.3),
@@ -1576,18 +1718,21 @@ def plot_total_ionization_nir_lwir_comparison_with_gamma_axis(
     }
     material_order = {"BaF2": 0}
 
-    fig, axes = plt.subplots(1, 2, figsize=(13.5, 5.2), sharey=True)
+    fig, axes = plt.subplots(
+        1,
+        len(enabled_regimes),
+        figsize=(6.8 * len(enabled_regimes), 5.2),
+        sharey=True,
+    )
+    axes = np.atleast_1d(axes)
 
-    print("\nCalculating NIR/LWIR total-ionization comparison ...\n")
+    print("\nCalculating enabled-regime total-ionization comparison ...\n")
 
-    for ax, regime in zip(axes, regime_order):
+    for ax, regime in zip(axes, enabled_regimes):
         regime_cases = sorted(
             [case for case in cases if case["region"] == regime],
             key=lambda case: material_order.get(case["material"], 99),
         )
-
-        if not regime_cases:
-            raise ValueError(f"No cases were supplied for regime {regime!r}.")
 
         wavelength_um = float(regime_cases[0]["wavelength_um"])
 
@@ -1613,7 +1758,7 @@ def plot_total_ionization_nir_lwir_comparison_with_gamma_axis(
             W_marker = None
             if marker_info is not None:
                 I_marker, _marker_label = marker_info
-                W_marker = interpolate_log_y(I, Wtotal, I_marker)
+                W_marker = direct_peak_total_rate_at_intensity(case, I_marker)
 
             if W_marker is not None:
                 ax.plot(
@@ -2499,6 +2644,7 @@ def _case_export_metadata(case: CaseDict) -> Dict[str, Any]:
         "Eg_eV": float(Eg_J / E_CHARGE),
         "mred_over_me": float(mred / ME0),
         "transmission_factor": float(trans),
+        "threshold_fluence": case.get("threshold_fluence"),
     }
     for key in ("pulse_energy_uj", "beam_diameter_a_um", "beam_diameter_b_um"):
         if case.get(key) is not None:
@@ -2541,6 +2687,7 @@ def save_baf2_plot_variables(
     arrays: Dict[str, np.ndarray] = {}
     component_rows: List[Dict[str, Any]] = []
     total_rows: List[Dict[str, Any]] = []
+    surface_rows: List[Dict[str, Any]] = []
     component_manifest: Dict[str, Any] = {}
     total_manifest: Dict[str, Any] = {}
     surface_manifest: Dict[str, Any] = {}
@@ -2551,6 +2698,11 @@ def save_baf2_plot_variables(
         short = str(case["short"])
         metadata = _case_export_metadata(case)
         case_metadata[short] = metadata
+        Wtotal_direct_at_lidt_cm3_fs = direct_peak_total_rate_at_intensity(
+            case,
+            case_lidt_peak_intensity_wcm2(case),
+            n_time_points=600,
+        )
 
         component = compute_case_scaling_components(
             case=case,
@@ -2628,6 +2780,7 @@ def save_baf2_plot_variables(
                     "I_wcm2": float(intensity),
                     "gamma_baf2_reference": float(total_gamma[index]),
                     "Wtotal_peak_cm3_fs": float(total["Wtotal_peak_cm3_fs"][index]),
+                    "Wtotal_direct_at_lidt_cm3_fs": Wtotal_direct_at_lidt_cm3_fs,
                 }
             )
 
@@ -2645,6 +2798,43 @@ def save_baf2_plot_variables(
             arrays[array_name] = np.asarray(values, dtype=float)
             surface_manifest[short]["arrays"][name] = array_name
 
+        for density_index in range(surface["I_grid_wcm2"].shape[0]):
+            for intensity_index in range(surface["I_grid_wcm2"].shape[1]):
+                surface_rows.append(
+                    {
+                        **metadata,
+                        "dataset": "surface3d",
+                        "density_index": density_index,
+                        "intensity_index": intensity_index,
+                        "I_wcm2": float(
+                            surface["I_grid_wcm2"][density_index, intensity_index]
+                        ),
+                        "ne_cm3": float(
+                            surface["ne_grid_cm3"][density_index, intensity_index]
+                        ),
+                        "log10_I_grid_wcm2": float(
+                            surface["log10_I_grid_wcm2"][density_index, intensity_index]
+                        ),
+                        "log10_ne_grid_cm3": float(
+                            surface["log10_ne_grid_cm3"][density_index, intensity_index]
+                        ),
+                        "Wpi_grid_cm3_fs": float(
+                            surface["Wpi_grid_m3_s"][density_index, intensity_index]
+                            * RATE_CM3_FS_PER_M3_S
+                        ),
+                        "Wav_grid_cm3_fs": float(
+                            surface["Wav_grid_m3_s"][density_index, intensity_index]
+                            * RATE_CM3_FS_PER_M3_S
+                        ),
+                        "Wtotal_grid_cm3_fs": float(
+                            surface["Wtotal_grid_cm3_fs"][density_index, intensity_index]
+                        ),
+                        "log10_Wtotal_grid_cm3_fs": float(
+                            surface["log10_Wtotal_grid_cm3_fs"][density_index, intensity_index]
+                        ),
+                    }
+                )
+
     manifest = {
         "description": "Labeled variables for BaF2 Keldysh and avalanche-ionization plots.",
         "enabled_cases": list(case_metadata),
@@ -2655,6 +2845,7 @@ def save_baf2_plot_variables(
             "Wpi_peak_cm3_fs": "cm^-3 fs^-1",
             "Wav_peak_cm3_fs": "cm^-3 fs^-1",
             "Wtotal_peak_cm3_fs": "cm^-3 fs^-1",
+            "Wtotal_direct_at_lidt_cm3_fs": "cm^-3 fs^-1",
             "ne_max_cm3": "cm^-3",
             "Wpi_grid_m3_s": "m^-3 s^-1",
             "Wav_grid_m3_s": "m^-3 s^-1",
@@ -2667,6 +2858,7 @@ def save_baf2_plot_variables(
             "manifest": "baf2_manifest.json",
             "component_scaling_csv": "baf2_component_scaling_long.csv",
             "total_comparison_csv": "baf2_total_comparison_long.csv",
+            "surface3d_csv": "baf2_surface3d_long.csv",
         },
         "component_scaling": component_manifest,
         "total_comparison": total_manifest,
@@ -2677,6 +2869,7 @@ def save_baf2_plot_variables(
         json.dump(manifest, handle, indent=2, allow_nan=False)
     _write_csv(output_dir / "baf2_component_scaling_long.csv", component_rows)
     _write_csv(output_dir / "baf2_total_comparison_long.csv", total_rows)
+    _write_csv(output_dir / "baf2_surface3d_long.csv", surface_rows)
     print(f"Saved BaF2 variables to {output_dir}")
 
 
@@ -2726,8 +2919,12 @@ def run_first_last_table_workflow(
 
     plot_keldysh_rate_curves(cases=cases, save_dir=save_dir)
     solve_and_display_summary(cases)
-    # Disabled with the 9.2-um case: this plot requires both NIR and LWIR.
-    # plot_total_ionization_nir_lwir_comparison_with_gamma_axis(...)
+    plot_total_ionization_nir_lwir_comparison_with_gamma_axis(
+        cases=cases,
+        n_intensity_points=points,
+        include_field_factor_two=True,
+        save_dir=save_dir,
+    )
 
 
 def run_all_plots_workflow(
@@ -2737,15 +2934,23 @@ def run_all_plots_workflow(
 ) -> None:
     """Run the compact workflow plus all plots."""
 
+    # Save the complete 2D figure set before the slower density-summary and
+    # 3D calculations.  This makes a normal VS Code run populate the output
+    # folder promptly, rather than leaving only the first graph while the
+    # long numerical stages are still running.
     plot_keldysh_rate_curves(cases=cases, save_dir=save_dir)
-    solve_and_display_summary(cases)
-    # Disabled with the 9.2-um case: this plot requires both NIR and LWIR.
-    # plot_total_ionization_nir_lwir_comparison_with_gamma_axis(...)
     plot_baf2_figures(
         cases=cases,
         n_intensity_points=points,
         save_dir=save_dir,
     )
+    plot_total_ionization_nir_lwir_comparison_with_gamma_axis(
+        cases=cases,
+        n_intensity_points=points,
+        include_field_factor_two=True,
+        save_dir=save_dir,
+    )
+    solve_and_display_summary(cases)
     plot_total_ionization_3d_surface_grid(
         cases=cases,
         save_dir=save_dir,
@@ -2784,7 +2989,17 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--save",
         action="store_true",
-        help="Save figures and labeled numerical variables instead of displaying figures.",
+        default=True,
+        help=(
+            "Save every currently enabled BaF2 figure and labeled numerical variables "
+            "(the default behavior)."
+        ),
+    )
+    parser.add_argument(
+        "--no-save",
+        action="store_false",
+        dest="save",
+        help="Do not save files; use --mode for an interactive, selective plot run.",
     )
     # CODEX MODIFICATION START: optional open saved image preview
     parser.add_argument(
@@ -2798,8 +3013,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--editable",
         action="store_true",
         help=(
-            "When used with --save, also export a .mplfig.pkl editable "
-            "Matplotlib version of each figure."
+            "Retained for compatibility. Saved figures automatically include "
+            "a .mplfig.pkl editable Matplotlib file."
         ),
     )
     # CODEX MODIFICATION END: optional editable figure exports
@@ -2816,18 +3031,22 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--outdir",
         type=str,
-        default=str(Path(__file__).resolve().parent / "figures_Keldsyh_II_BaF2"),
-        help="Directory used when --save is specified.",
+        default=str(
+            Path(__file__).resolve().parent
+            / "figures_Keldsyh_II"
+            / "figures_Keldsyh_II_BaF2"
+        ),
+        help="Directory used for the default automatic saving behavior.",
     )
     # CODEX MODIFICATION START: CLI support for 3D surface plot
     parser.add_argument(
         "--case-index",
         type=int,
         default=None,
-        choices=range(1),
-        metavar="{0}",
+        choices=range(2),
+        metavar="{0,1}",
         help=(
-            "Optional case used by --mode 3d: 0 BaF2_NIR. "
+            "Optional case used by --mode 3d: 0 BaF2_NIR, 1 BaF2_LWIR. "
             "If omitted, all enabled cases are plotted."
         ),
     )
@@ -2861,6 +3080,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     cases = get_cases()
     report_case_input_uncertainties(cases)
+    report_threshold_fluence_comparison(cases)
     save_dir = Path(args.outdir) if args.save else None
 
     # CODEX MODIFICATION START: display all Matplotlib windows after plotting
@@ -2868,17 +3088,23 @@ def main(argv: Optional[List[str]] = None) -> None:
     DEFER_FIGURE_SHOW = bool(args.show_at_end)
     # CODEX MODIFICATION END: display all Matplotlib windows after plotting
 
-    # CODEX MODIFICATION START: optional editable figure exports
+    # CODEX MODIFICATION START: automatic editable figure exports
     global SAVE_EDITABLE_FIGURES
-    SAVE_EDITABLE_FIGURES = bool(args.editable and args.save)
-    # CODEX MODIFICATION END: optional editable figure exports
+    SAVE_EDITABLE_FIGURES = bool(args.save)
+    # CODEX MODIFICATION END: automatic editable figure exports
 
     # CODEX MODIFICATION START: optional open saved image preview
     global OPEN_SAVED_FIGURES
     OPEN_SAVED_FIGURES = bool(args.open_after_save and args.save)
     # CODEX MODIFICATION END: optional open saved image preview
 
-    if args.mode in ("summary", "first-last"):
+    # Saving is deliberately comprehensive, matching the various-material
+    # workflow: one saved run updates every currently enabled figure as well
+    # as the corresponding numerical exports.  Selective --mode choices are
+    # retained for interactive, non-saving use.
+    if args.save:
+        run_all_plots_workflow(cases, args.points, save_dir)
+    elif args.mode in ("summary", "first-last"):
         run_first_last_table_workflow(cases, args.points, save_dir)
     elif args.mode in ("figures", "dis"):
         plot_baf2_figures(cases, args.points, save_dir)
