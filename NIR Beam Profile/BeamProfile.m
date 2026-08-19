@@ -3,11 +3,11 @@ set(groot, 'DefaultAxesFontSize', 16, 'DefaultTextFontSize', 16, ...
     'DefaultLegendFontSize', 16, 'DefaultColorbarFontSize', 16);
 
 % === Beam profile analysis for BaF2 07_10_26 ===
-baseFolder = "C:\Users\Faculty\OneDrive - The City University of New York\Tasks\BNL2026\LIDT2026\NIR Beam Profile\07_23_26";
-% baseFolder = 'D:\OneDrive - The City University of New York\Tasks\BNL2026\LIDT2026\NIR Beam Profile\07_23_26';
+% baseFolder = "C:\Users\Faculty\OneDrive - The City University of New York\Tasks\BNL2026\LIDT2026\NIR Beam Profile\08_03_26";
+baseFolder = 'D:\OneDrive - The City University of New York\Tasks\BNL2026\LIDT2026\NIR Beam Profile\07_30_25';
 
 folderPath = fullfile(baseFolder, "beamprofile");
-bgPath = fullfile(baseFolder, "Bg_Image__2026-07-23__12-14-56.png");
+bgPath = fullfile(baseFolder, "Image__2025-07-30__10-12-19 ZnSe bg.tiff");
 
 pixel_size_um = 5.86;
 thresholdFraction = exp(-2); % 1/e^2 of the maximum signal

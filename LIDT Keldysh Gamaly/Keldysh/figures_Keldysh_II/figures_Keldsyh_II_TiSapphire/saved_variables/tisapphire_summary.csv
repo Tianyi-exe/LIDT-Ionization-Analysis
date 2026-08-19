@@ -1,0 +1,2 @@
+Eg_eV,I0_wcm2,diagnostic_only,electron_hole_reduced_effective_mass_over_me,gamma_I0,lossless_surface_coupling_factor,material,n0,ne_photo_final_cm3,ne_total_final_cm3,photo_solver_ok,reduced_mass_definition,tau_fs,total_solver_ok,wavelength_um
+8.8,10000000000000.0,True,1.0,2.5454658451849337,0.9241755933627389,Ti:Sapphire (Ti3+:Al2O3),1.76,3.3587787578972692e+16,3.360561780202511e+16,True,electron-hole reduced effective mass,100.0,True,0.8
